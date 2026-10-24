@@ -1,0 +1,53 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 82d8ecd..431b73e 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -477,9 +477,33 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	}
+ 	IOLockUnlock(fb->fLock);
+ 	if (rec != NULL) {
++		/*
++		 * 0098: time the real present() call. mach_absolute_time
++		 * ticks converted with absolutetime_to_nanoseconds()
++		 * (osfmk/kern/clock.h), same API the bsd side uses.
++		 */
++		uint64_t t0 = mach_absolute_time();
++		uint64_t ns = 0;
+ 		fb->present(rec);
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		sweet_fb_present_count++;
++		sweet_fb_present_ns += ns;
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
++	if ((count % 300) == 0) {
++		/*
++		 * 0098: periodic stat line. count is the vsync counter and
++		 * runs even while the display is off, but this print is on
++		 * the non-poweroff path only, so stat lines pause during
++		 * screen-off. now is converted to ns so stat rows can be
++		 * compared without assuming the timer constant.
++		 */
++		uint64_t now_ns = 0;
++		absolutetime_to_nanoseconds(now, &now_ns);
++		IOLog("SWEET FB: stat vsync=%llu now=%llu swaps=%llu presents=%llu present_ns=%llu\n",
++		    count, now_ns, sweet_fb_swap_count,
++		    sweet_fb_present_count, sweet_fb_present_ns);
++	}
+ 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ }
+ 
+@@ -526,6 +550,14 @@ sweet_dim_pixel(uint32_t p, uint32_t scale)
+ 
+ static uint32_t sweet_fb_swaps_logged;
+ static uint64_t sweet_fb_swap_count;
++/*
++ * 0098: measurement only, no behavior change. presents counts the
++ * vsync-driven present() calls (the real frame output), present_ns
++ * accumulates the time spent inside present(). Both are printed once
++ * per 300 vsyncs (about 5 s) as a "SWEET FB: stat" line.
++ */
++static uint64_t sweet_fb_present_count;
++static uint64_t sweet_fb_present_ns;
+ 
+ /* Copy each enabled layer's surface into the panel memory (no scaling). */
+ /*
