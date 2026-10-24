@@ -1,0 +1,51 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index d5a79d3..82d8ecd 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -92,6 +92,8 @@ enum {
+ #define SWEET_FB_MAX_NITS               450     /* CoreBrightness nits at full scale */
+ #define SWEET_FB_MAX_LEVEL              0xfff   /* polaris panel bl-max-level (vendor DT) */
+ #define SWEET_FB_DIM_MAX                256     /* software gamma: 256 = no dimming */
++#define SWEET_FB_DIM_MIN                32      /* 0096 floor: ~12.5% so a user drag
++						 * to minimum stays readable */
+ 
+ class IOMobileFramebuffer : public IOService {
+ 	OSDeclareDefaultStructors(IOMobileFramebuffer);
+@@ -271,6 +273,19 @@ AppleCLCD::start(IOService *provider)
+ 		IOLog("SWEET FB: sweetbl_level=%u -> software gamma %u/%u\n",
+ 		    blLevel, fDimScale, SWEET_FB_DIM_MAX);
+ 	}
++	/*
++	 * 0096 (P0 brightness fix): preset IOMFBBrightnessLevel on the
++	 * framebuffer BEFORE the backlight service is published.
++	 * CoreBrightness builds its display module only after it can read
++	 * this property here, but the property used to appear only after
++	 * CoreBrightness itself set it via setProperties() -- a
++	 * chicken-and-egg that left AppleARMBacklight discovered but never
++	 * opened on polaris. Deliberately NOT wrapped in an fDsi block:
++	 * polaris has no DSI path (topaz-only) and no "SWEET FB: DSI0 ctrl"
++	 * in the log. 200 must match brightness-nits in
++	 * startBacklightService() below.
++	 */
++	setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
+ 	(void)startBacklightService();
+ 	return true;
+ }
+@@ -393,6 +408,17 @@ AppleCLCD::setProperties(OSObject *properties)
+ 		level = SWEET_FB_MAX_LEVEL;
+ 	}
+ 	dim = (level * SWEET_FB_DIM_MAX + SWEET_FB_MAX_LEVEL / 2) / SWEET_FB_MAX_LEVEL;
++	if (dim < SWEET_FB_DIM_MIN) {
++		/*
++		 * 0096: floor for user-driven brightness only. dim 0 makes
++		 * the screen unreadable with no way back except a reflash.
++		 * Deliberately NOT in present()'s dim < SWEET_FB_DIM_MAX
++		 * check: display off goes through selector 12, not this
++		 * gamma path, and a floor there could catch a real panel
++		 * off. Also does not touch the sweetbl_level boot-arg path.
++		 */
++		dim = SWEET_FB_DIM_MIN;
++	}
+ 	IOLockLock(fLock);
+ 	fDimScale = dim;
+ 	fDirty = true;          /* redraw the latest frame with the new gamma */
