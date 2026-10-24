@@ -8,7 +8,7 @@ on:
         default: "13.5"
       kernel_config:
         description: RELEASE / DEVELOPMENT / DEBUG
-        default: DEVELOPMENT
+        default: RELEASE
       machine_config:
         description: xnu MACHINE_CONFIG
         default: SWEET
@@ -16,7 +16,7 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main]
+    branches: [main, polaris-0094-0095]
     paths:
       - "xnu/patches/**"
       - ".github/workflows/xnu.yml"
@@ -25,11 +25,14 @@ concurrency:
   group: xnu-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 env:
   DXB_REPO: https://github.com/blacktop/darwin-xnu-build
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
-  KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
+  KERNEL_CONFIG: ${{ inputs.kernel_config || 'RELEASE' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
 
 jobs:
@@ -72,7 +75,18 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+        run: |
+          set -o pipefail
+          bash build.sh 2>&1 | tee ../build_ci.log
+
+      - name: Verify keys/backlight patches compiled in
+        if: always()
+        run: |
+          set -e
+          test -f dxb/xnu/bsd/dev/polaris_keys.c
+          grep -q 'AppleARMBacklight' dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+          if grep -E 'Skipping patch.*(0094|0095)' build_ci.log; then echo 'OUR PATCH WAS SKIPPED'; exit 1; fi
+          echo 'keys/backlight patches present in build tree'
 
       - name: Package build tree for local compiles
         if: always()
@@ -113,8 +127,20 @@ jobs:
         run: |
           mkdir -p out
           cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
+          cp build_ci.log out/build_ci.log || true
           ls -la out
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+
+      - name: Publish kernel as release asset (tokenless download)
+        if: success()
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.run_id }}
+          name: ci-${{ github.run_id }}-${{ env.KERNEL_CONFIG }}
+          files: |
+            out/kernel.*
+            out/build_ci.log
 
       - uses: actions/upload-artifact@v4
         if: always()
